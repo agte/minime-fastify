@@ -1,0 +1,5 @@
+{
+  "name": "minime-server-test",
+  "description": "Тест веб-сервера для фреймворка minime",
+  "type": "module"
+}
