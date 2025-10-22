@@ -1,5 +1,8 @@
 {
   "name": "minime-server-test",
   "description": "Тест веб-сервера для фреймворка minime",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@minime/core": "github:agte/minime-core"
+  }
 }

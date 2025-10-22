@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { accessSync } from 'fs';
 import Plugin from '@minime/core/Plugin';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
@@ -59,7 +60,12 @@ export default class FastifyPlugin extends Plugin {
 
     this.fastify.register(cors, { origin: true });
     this.fastify.register(sensible);
-    this.fastify.register(serveStatic, { root: join(this.app.path, 'public') });
+
+    const publicDirPath = join(this.app.path, 'public');
+    try {
+      accessSync(publicDirPath);
+      this.fastify.register(serveStatic, { root: publicDirPath });
+    } catch (err) {}
 
     if (config.auth) {
       if (!config.auth.secret) {
