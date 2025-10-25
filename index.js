@@ -1,9 +1,8 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { accessSync } from 'fs';
+import { accessSync } from 'node:fs';
 import Plugin from '@minime/core/Plugin';
 import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import swagger from '@fastify/swagger';
@@ -43,23 +42,33 @@ export default class FastifyPlugin extends Plugin {
       forceCloseConnections: true,
       disableRequestLogging: true,
       ajv: {
-        plugins: [ajvFormats, ajvKeywords]
+        plugins: [ajvFormats, ajvKeywords],
+        customOptions: {
+          strict: false
+        }
       }
     });
     this.app.fastify = this.fastify;
 
-    this.fastify.addHook('onError', (request, reply, error, done) => {
-      this.logger.error({
-        reqId: request.id,
-        url: request.url,
-        method: request.method,
-        err: error
-      }, 'Unhandled error')
-      done();
-    });
-
     this.fastify.register(cors, { origin: true });
-    this.fastify.register(sensible);
+
+    this.fastify.setErrorHandler((error, request, reply) => {
+      if (error.validation) {
+        reply.status(400).send({
+          code: 'validation_failed',
+          details: error.validation
+        });
+      } else {
+        this.logger.error({
+          reqId: request.id,
+          url: request.url,
+          method: request.method,
+          error,
+          stackTrace: error.stack
+        });
+        reply.status(500).send({ code: 'unknown_error' });
+      }
+    });
 
     const publicDirPath = join(this.app.path, 'public');
     try {
@@ -72,30 +81,46 @@ export default class FastifyPlugin extends Plugin {
         throw Error('Не задан секрет для JWT в настройках веб-сервера');
       }
       this.fastify.register(jwt, { secret: config.auth.secret });
+
       this.fastify.addHook('onRoute', (routeOptions) => {
-        if (routeOptions.config?.auth) {
+        const authConfig = routeOptions.config?.auth;
+        if (authConfig) {
           routeOptions.schema.security = [{ jwt: [] }];
+
+          if (typeof authConfig === 'boolean') {
+            routeOptions.config.auth = {};
+          } else if (typeof authConfig === 'string') { // single role
+            routeOptions.config.auth = { roles: [authConfig] };
+          } else if (Array.isArray(authConfig)) { // multiple roles
+            routeOptions.config.auth = { roles: authConfig };
+          } else if (authConfig.roles && Array.isArray(authConfig.roles)) {
+            // do nothing
+          } else if (typeof authConfig === 'object' && authConfig.roles) {
+            delete authConfig.roles;
+            this.logger.warn('Неправильная конфигурация роута', routeOptions.config);
+          }
         }
       });
+
       this.fastify.addHook('preHandler', async (request, reply) => {
-        const config = request.routeOptions.config?.auth;
-        if (!config) {
+        const authConfig = request.routeOptions.config?.auth;
+        if (!authConfig) {
           return;
         }
 
         try {
           await request.jwtVerify();
         } catch (err) {
-          return reply.unauthorized(err.message);
+          return reply.code(401).send({ code: err.code });
         }
 
-        if (config.roles && Array.isArray(config.roles)) {
+        if (config.roles) {
           const role = request.user.role;
           if (!role || !config.roles.includes(role)) {
-            return reply.forbidden({
-              code: 'insufficient_permission',
+            return reply.code(403).send({
+              code: 'insufficient_permissions',
               currentRole: role,
-              requiredRole: config.roles.join(),
+              requiredRoles: config.roles.join()
             });
           }
         }
