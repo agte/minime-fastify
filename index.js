@@ -4,12 +4,13 @@ import { accessSync } from 'node:fs';
 import Plugin from '@minime/core/Plugin';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
-import jwt from '@fastify/jwt';
 import swagger from '@fastify/swagger';
 import serveStatic from '@fastify/static';
 import apiReference from '@scalar/fastify-api-reference';
 import ajvFormats from 'ajv-formats';
 import ajvKeywords from 'ajv-keywords';
+
+import addAuth from './src/addAuth.js';
 
 const importSync = createRequire(import.meta.url);
 
@@ -76,55 +77,14 @@ export default class FastifyPlugin extends Plugin {
       this.fastify.register(serveStatic, { root: publicDirPath });
     } catch (err) {}
 
+    const securitySchemes = {};
     if (config.auth) {
-      if (!config.auth.secret) {
-        throw Error('Не задан секрет для JWT в настройках веб-сервера');
-      }
-      this.fastify.register(jwt, { secret: config.auth.secret });
-
-      this.fastify.addHook('onRoute', (routeOptions) => {
-        const authConfig = routeOptions.config?.auth;
-        if (authConfig) {
-          routeOptions.schema.security = [{ jwt: [] }];
-
-          if (typeof authConfig === 'boolean') {
-            routeOptions.config.auth = {};
-          } else if (typeof authConfig === 'string') { // single role
-            routeOptions.config.auth = { roles: [authConfig] };
-          } else if (Array.isArray(authConfig)) { // multiple roles
-            routeOptions.config.auth = { roles: authConfig };
-          } else if (authConfig.roles && Array.isArray(authConfig.roles)) {
-            // do nothing
-          } else if (typeof authConfig === 'object' && authConfig.roles) {
-            delete authConfig.roles;
-            this.logger.warn('Неправильная конфигурация роута', routeOptions.config);
-          }
-        }
-      });
-
-      this.fastify.addHook('preHandler', async (request, reply) => {
-        const authConfig = request.routeOptions.config?.auth;
-        if (!authConfig) {
-          return;
-        }
-
-        try {
-          await request.jwtVerify();
-        } catch (err) {
-          return reply.code(401).send({ code: err.code });
-        }
-
-        if (config.roles) {
-          const role = request.user.role;
-          if (!role || !config.roles.includes(role)) {
-            return reply.code(403).send({
-              code: 'insufficient_permissions',
-              currentRole: role,
-              requiredRoles: config.roles.join()
-            });
-          }
-        }
-      });
+      securitySchemes.jwt = {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT'
+      };
+      addAuth.call(this, config.auth);
     }
 
     this.fastify.register(swagger, {
@@ -135,27 +95,29 @@ export default class FastifyPlugin extends Plugin {
           description: packageInfo.description,
           version: packageInfo.version
         },
-        components: {
-          securitySchemes: {
-            jwt: {
-              type: 'http',
-              scheme: 'bearer',
-              bearerFormat: 'JWT',
-            }
-          }
-        }
+        components: { securitySchemes }
       }
     });
 
     this.fastify.get('/', {
       schema: {
         summary: 'Кратко о приложении',
-        tags: ['Общее']
+        tags: ['Общее'],
+        responses: {
+          200: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              version: { type: 'string' },
+              description: { type: 'string' }
+            }
+          }
+        }
       },
     }, () => ({
       name: packageInfo.name,
       version: packageInfo.version,
-      description: packageInfo.description,
+      description: packageInfo.description
     }));
 
     // Бизнес-логика
